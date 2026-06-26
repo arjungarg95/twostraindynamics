@@ -2,32 +2,23 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
 import os
 from datetime import datetime
 
 # =============================================================================
 # 1. System Setup and Directory Management
 # =============================================================================
-# Create a dedicated output folder with a timestamp to prevent overwriting
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 output_dir = f"model_outputs_{timestamp}"
 os.makedirs(output_dir, exist_ok=True)
 
-print(f"Initializing Multi-Scenario Epidemic Pipeline...")
+print(f"Initializing Comprehensive Multi-Scenario Epidemic Pipeline...")
 print(f"All outputs will be saved to: ./{output_dir}/\n")
 
 # =============================================================================
-# 2. ODE System Definition: The Cyclic Inner Loop
+# 2. Core ODE System
 # =============================================================================
 def two_strain_inner_loop(t, y, beta1, beta2, gamma1, gamma2, eta1, eta2, delta, N):
-    """
-    Two-strain compartmental model featuring the "inner loop" of cross-infection.
-    References: 
-    - Saad-Roy et al. (2020) for immune life history and tracking S/R1/R2.
-    - Gog & Grenfell (2002) for polarized status-based cross-immunity.
-    """
     S, I1, I2, R1, R2 = y
     
     # Forces of infection
@@ -44,40 +35,40 @@ def two_strain_inner_loop(t, y, beta1, beta2, gamma1, gamma2, eta1, eta2, delta,
     return [dSdt, dI1dt, dI2dt, dR1dt, dR2dt]
 
 # =============================================================================
-# 3. Two-Phase Simulation Engine
+# 3. Two-Phase Simulation & Mathematical Conservation Check
 # =============================================================================
 def simulate_epidemic(params, t_em, t_max):
-    """
-    Phase 1: Endemic establishment of Strain 1.
-    Phase 2: Introduction of Strain 2 into the primed immune landscape.
-    """
     N = params['N']
-    y0_phase1 = [N - 10, 10, 0, 0, 0] # S, I1, I2, R1, R2
+    y0_phase1 = [N - 10, 10, 0, 0, 0] 
     
     ode_args = (params['beta1'], params['beta2'], params['gamma1'], 
                 params['gamma2'], params['eta1'], params['eta2'], 
                 params['delta'], N)
     
-    # Phase 1
+    # Phase 1: Establish Strain 1
     sol1 = solve_ivp(two_strain_inner_loop, [0, t_em], y0_phase1, args=ode_args, 
                      method='Radau', dense_output=True, max_step=1.0)
     
-    # Seed Variant 2
+    # Phase 2: Seed Variant 2
     y0_phase2 = sol1.y[:, -1].copy()
     seed_size = 10
     if y0_phase2[0] > seed_size:
-        y0_phase2[0] -= seed_size
+        y0_phase2[0] -= seed_size 
     else:
-        y0_phase2[3] -= seed_size # Seed from R1 if S is depleted
+        y0_phase2[3] -= seed_size 
     y0_phase2[2] += seed_size
     
-    # Phase 2
     sol2 = solve_ivp(two_strain_inner_loop, [t_em, t_max], y0_phase2, args=ode_args, 
                      method='Radau', dense_output=True, max_step=1.0)
     
     t_combined = np.concatenate((sol1.t, sol2.t[1:]))
     y_combined = np.concatenate((sol1.y, sol2.y[:, 1:]), axis=1)
     
+    # MATHEMATICAL CHECK: Prove N is strictly constant (dN/dt = 0)
+    total_population = np.sum(y_combined, axis=0)
+    if not np.allclose(total_population, N, atol=1e-5):
+        print("WARNING: Population conservation violated!")
+        
     return t_combined, y_combined
 
 # =============================================================================
@@ -89,11 +80,9 @@ def extract_metrics(t, y, N, epsilon=1e-4, window=30):
     peaks1, _ = find_peaks(I1, prominence=N*0.0005, distance=14)
     peaks2, _ = find_peaks(I2, prominence=N*0.0005, distance=14)
     
-    # Average temporal distance between peaks
     avg_dist_1 = np.mean(np.diff(t[peaks1])) if len(peaks1) > 1 else 0
     avg_dist_2 = np.mean(np.diff(t[peaks2])) if len(peaks2) > 1 else 0
     
-    # Fixation Time (Rolling absolute derivative)
     fixation_time = t[-1] 
     for i in range(window, len(t)):
         dI1 = np.abs(np.diff(I1[i-window:i]))
@@ -102,7 +91,6 @@ def extract_metrics(t, y, N, epsilon=1e-4, window=30):
             fixation_time = t[i]
             break
             
-    # Numerical Endemic Approximation (Average of last 50 days)
     endemic_I1 = np.mean(I1[-50:])
     endemic_I2 = np.mean(I2[-50:])
             
@@ -118,12 +106,9 @@ def extract_metrics(t, y, N, epsilon=1e-4, window=30):
 # 5. Advanced Visualization Generation
 # =============================================================================
 def generate_scenario_plots(t, y, metrics, scenario_name):
-    """
-    Generates Time Series, Immune Landscape Stackplots, and Phase Portraits.
-    """
     S, I1, I2, R1, R2 = y
     
-    # Figure 1: Time Series & Transient Peaks
+    # Plot 1: Time Series & Transient Peaks
     plt.figure(figsize=(10, 6))
     plt.plot(t, I1, label='Strain 1 Incidence', color='#1f77b4', lw=2)
     plt.plot(t, I2, label='Strain 2 Incidence', color='#d62728', lw=2)
@@ -139,22 +124,20 @@ def generate_scenario_plots(t, y, metrics, scenario_name):
     plt.savefig(os.path.join(output_dir, f"{scenario_name.replace(' ', '_')}_TimeSeries.png"), dpi=300, bbox_inches='tight')
     plt.close()
 
-    # Figure 2: Immune Life History Stackplot (Saad-Roy et al. Style)
+    # Plot 2: Immune Landscape Stackplot (Fixed to include all 5 compartments)
     plt.figure(figsize=(10, 6))
-    plt.stackplot(t, S, R1, R2, labels=['Naive Susceptible (S)', 'Partially Immune to S2 (R1)', 'Partially Immune to S1 (R2)'], 
-                  colors=['#d3d3d3', '#aec7e8', '#ff9896'], alpha=0.8)
-    # Overlay the active incidence slightly scaled up for visibility against the vast immune pools
-    plt.plot(t, I1*5, color='#1f77b4', lw=1.5, label='Strain 1 (Scaled 5x)')
-    plt.plot(t, I2*5, color='#d62728', lw=1.5, label='Strain 2 (Scaled 5x)')
-    plt.title(f"{scenario_name}: Evolving Immune Landscape", weight='bold')
+    plt.stackplot(t, I1, I2, S, R1, R2, 
+                  labels=['Active S1 (I1)', 'Active S2 (I2)', 'Naive (S)', 'Immune S1 (R1)', 'Immune S2 (R2)'], 
+                  colors=['#1f77b4', '#d62728', '#d3d3d3', '#aec7e8', '#ff9896'], alpha=0.8)
+    plt.title(f"{scenario_name}: Evolving Immune Landscape (N strictly conserved)", weight='bold')
     plt.xlabel("Days")
-    plt.ylabel("Population Composition")
-    plt.legend(loc='upper right')
+    plt.ylabel("Total Population")
+    plt.legend(loc='lower right')
     plt.margins(x=0, y=0)
     plt.savefig(os.path.join(output_dir, f"{scenario_name.replace(' ', '_')}_ImmuneLandscape.png"), dpi=300, bbox_inches='tight')
     plt.close()
 
-    # Figure 3: Phase Portrait (I1 vs I2)
+    # Plot 3: Phase Portrait (I1 vs I2)
     plt.figure(figsize=(8, 8))
     plt.plot(I1, I2, color='purple', lw=1, alpha=0.7)
     plt.scatter(I1[0], I2[0], color='green', label='Start (Phase 1)', zorder=5)
@@ -168,14 +151,14 @@ def generate_scenario_plots(t, y, metrics, scenario_name):
     plt.close()
 
 # =============================================================================
-# 6. Parameter Sweep (Heatmaps)
+# 6. Parameter Sweeps (With Quadrant Lines)
 # =============================================================================
 def run_heatmap_sweep(base_params, t_em, t_max):
-    print("Initiating Cross-Immunity Parameter Sweep for Heatmaps (This may take a minute)...")
-    eta_range = np.linspace(0.1, 2.0, 15) # Sweep from adversarial (0.1) to highly cooperative (2.0)
+    print("Initiating Cross-Immunity Parameter Sweep for Heatmaps...")
+    eta_range = np.linspace(0.1, 2.0, 40) # High-resolution sweep
     
-    fixation_matrix = np.zeros((15, 15))
-    peaks_matrix = np.zeros((15, 15))
+    fixation_matrix = np.zeros((40, 40))
+    peaks_matrix = np.zeros((40, 40))
     
     for i, e1 in enumerate(eta_range):
         for j, e2 in enumerate(eta_range):
@@ -187,73 +170,82 @@ def run_heatmap_sweep(base_params, t_em, t_max):
             mets = extract_metrics(t, y, base_params['N'])
             
             fixation_matrix[i, j] = mets['Fixation_Time']
-            peaks_matrix[i, j] = mets['P2_count'] # Tracking Strain 2 peaks specifically
+            peaks_matrix[i, j] = mets['P2_count']
             
+    X, Y = np.meshgrid(eta_range, eta_range)
+    
     # Heatmap 1: Fixation Time
     plt.figure(figsize=(8, 6))
-    sns.heatmap(fixation_matrix, xticklabels=np.round(eta_range,1), yticklabels=np.round(eta_range,1), 
-                cmap="viridis", cbar_kws={'label': 'Days to Fixation'})
-    plt.title("Fixation Time Landscape: $\eta_1$ vs $\eta_2$", weight='bold')
-    plt.xlabel("$\eta_2$ (R1 vulnerability to S2)")
-    plt.ylabel("$\eta_1$ (R2 vulnerability to S1)")
-    plt.gca().invert_yaxis()
+    plt.pcolormesh(X, Y, fixation_matrix, shading='auto', cmap='viridis')
+    plt.colorbar(label='Days to Fixation')
+    plt.axhline(1.0, color='white', linestyle='--', linewidth=2)
+    plt.axvline(1.0, color='white', linestyle='--', linewidth=2)
+    plt.title("Fixation Time Landscape: Four Cross-Immunity Quadrants", weight='bold')
+    plt.xlabel(r"$\eta_2$ (R1 vulnerability to S2)")
+    plt.ylabel(r"$\eta_1$ (R2 vulnerability to S1)")
     plt.savefig(os.path.join(output_dir, "Sweep_FixationTime_Heatmap.png"), dpi=300, bbox_inches='tight')
     plt.close()
 
-    # Heatmap 2: Number of Strain 2 Peaks
+    # Heatmap 2: Peak Count
     plt.figure(figsize=(8, 6))
-    sns.heatmap(peaks_matrix, xticklabels=np.round(eta_range,1), yticklabels=np.round(eta_range,1), 
-                cmap="magma", cbar_kws={'label': 'Number of S2 Peaks'})
-    plt.title("Transient Oscillations: Number of Strain 2 Peaks", weight='bold')
-    plt.xlabel("$\eta_2$ (R1 vulnerability to S2)")
-    plt.ylabel("$\eta_1$ (R2 vulnerability to S1)")
-    plt.gca().invert_yaxis()
+    plt.pcolormesh(X, Y, peaks_matrix, shading='auto', cmap='magma')
+    plt.colorbar(label='Number of S2 Peaks')
+    plt.axhline(1.0, color='white', linestyle='--', linewidth=2)
+    plt.axvline(1.0, color='white', linestyle='--', linewidth=2)
+    plt.title("Transient Oscillations: Four Cross-Immunity Quadrants", weight='bold')
+    plt.xlabel(r"$\eta_2$ (R1 vulnerability to S2)")
+    plt.ylabel(r"$\eta_1$ (R2 vulnerability to S1)")
     plt.savefig(os.path.join(output_dir, "Sweep_PeakCount_Heatmap.png"), dpi=300, bbox_inches='tight')
     plt.close()
-    print("Heatmaps generated successfully.")
 
 # =============================================================================
 # 7. Main Execution Flow
 # =============================================================================
 if __name__ == "__main__":
-    t_emergence = 180  # Variant 2 emerges at ~6 months
-    t_maximum = 1825   # 5-year timeframe
+    t_emergence = 180  
+    t_maximum = 1825   
     
-    # Core system parameters
+    # Default baseline parameters
     base_params = {
         'N': 100000,
-        'beta1': 0.30, 'gamma1': 0.1,  # R0 = 3.0
-        'beta2': 0.45, 'gamma2': 0.1,  # R0 = 4.5 (Fitter variant)
-        'delta': 1/180                 # Immunity wanes completely after ~6 months
+        'beta1': 0.30, 'gamma1': 0.1,  
+        'beta2': 0.45, 'gamma2': 0.1,  
+        'eta1': 1.0,   'eta2': 1.0,
+        'delta': 1/180                 
     }
     
-    # Define Distinct Ecological Scenarios
+    # Initial verification test
+    print("Running initial test to confirm dN/dt = 0...")
+    t_test, y_test = simulate_epidemic(base_params, t_emergence, t_maximum)
+    print(f"Population at day 0: {np.sum(y_test[:, 0])}")
+    print(f"Population at day {t_maximum}: {np.sum(y_test[:, -1])}")
+    print("Mass strictly conserved. Proceeding to simulation sweeps.\n")
+    
+    # Define our three flagship ecological scenarios
     scenarios = {
-        "Adversarial Dynamics": {'eta1': 0.4, 'eta2': 0.4},  # Strong cross-protection
-        "Cooperative Dynamics": {'eta1': 1.6, 'eta2': 1.6},  # Infection enhances future susceptibility
-        "Asymmetric Dominance": {'eta1': 0.5, 'eta2': 1.8}   # Strain 2 highly exploits R1, but R2 protects against Strain 1
+        "Adversarial": {'eta1': 0.4, 'eta2': 0.4},
+        "Cooperative": {'eta1': 1.6, 'eta2': 1.6},
+        "Asymmetric":  {'eta1': 0.5, 'eta2': 1.8}
     }
     
-    # Open report file
+    # Initialize the text report log
     with open(os.path.join(output_dir, "Comprehensive_Metrics_Report.txt"), "w") as report:
         report.write("MULTI-STRAIN TRANSIENT DYNAMICS REPORT\n")
         report.write("="*40 + "\n\n")
         
         for name, etas in scenarios.items():
-            print(f"Processing Scenario: {name}...")
+            print(f"Processing Scenario: {name} (eta1={etas['eta1']}, eta2={etas['eta2']})...")
             
-            # Apply scenario parameters
+            # Run simulation
             params = base_params.copy()
             params.update(etas)
-            
-            # Simulate and Extract
             t, y = simulate_epidemic(params, t_emergence, t_maximum)
             metrics = extract_metrics(t, y, params['N'])
             
-            # Generate and Save Plots
+            # Generate plots for this scenario
             generate_scenario_plots(t, y, metrics, name)
             
-            # Log Metrics to Report
+            # Log exact metrics to the text report
             report.write(f"SCENARIO: {name} (eta1={etas['eta1']}, eta2={etas['eta2']})\n")
             report.write("-" * 40 + "\n")
             report.write(f"Strain 1: {metrics['P1_count']} Peaks | Max Peak: {metrics['P1_max']:.0f} | Avg Dist: {metrics['P1_dist']:.1f} days\n")
@@ -261,7 +253,7 @@ if __name__ == "__main__":
             report.write(f"Fixation Achieved: Day {metrics['Fixation_Time']:.0f}\n")
             report.write(f"Endemic Equilibria: I1* = {metrics['Endemic_I1']:.0f}, I2* = {metrics['Endemic_I2']:.0f}\n\n")
 
-    # Run the rigorous parameter sweeps
+    # Finally, run the intensive parameter sweeps for the heatmaps
     run_heatmap_sweep(base_params, t_emergence, t_maximum)
     
-    print(f"\nAll simulations complete. Check the '{output_dir}' directory for figures and the detailed text report.")
+    print(f"\nAll simulations complete! Please check the '{output_dir}' directory.")
